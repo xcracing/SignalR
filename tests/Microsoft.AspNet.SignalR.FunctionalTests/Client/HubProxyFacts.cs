@@ -4,8 +4,6 @@ using System.Threading.Tasks;
 using Microsoft.AspNet.SignalR.Client.Hubs;
 using Microsoft.AspNet.SignalR.FunctionalTests;
 using Microsoft.AspNet.SignalR.FunctionalTests.Infrastructure;
-using Microsoft.AspNet.SignalR.Hosting.Memory;
-using Microsoft.AspNet.SignalR.Hubs;
 using Xunit;
 using Xunit.Extensions;
 
@@ -122,6 +120,71 @@ namespace Microsoft.AspNet.SignalR.Tests
 
                 Assert.True(wh.Wait(TimeSpan.FromSeconds(5)));
                 Assert.Equal(thrown, caught);
+            }
+        }
+
+        [Theory]
+        [InlineData(HostType.Memory, TransportType.ServerSentEvents)]
+        [InlineData(HostType.Memory, TransportType.LongPolling)]
+        [InlineData(HostType.IISExpress, TransportType.LongPolling)]
+        [InlineData(HostType.IISExpress, TransportType.ServerSentEvents)]
+        [InlineData(HostType.IISExpress, TransportType.Websockets)]
+        public void RequestHeadersSetCorrectly(HostType hostType, TransportType transportType)
+        {
+            using (var host = CreateHost(hostType, transportType))
+            {
+                host.Initialize();
+
+                HubConnection hubConnection = CreateHubConnection(host);
+                IHubProxy proxy = hubConnection.CreateHubProxy("ExamineHeadersHub");
+                var wh = new ManualResetEventSlim(false);
+
+                proxy.On("sendHeader", (headers) =>
+                {
+                    Assert.Equal<string>("test-header", (string)headers.testHeader);
+                    if (transportType != TransportType.Websockets)
+                    {
+                        Assert.Equal<string>("referer", (string)headers.refererHeader);
+                    }
+                    wh.Set();
+                });
+
+                hubConnection.Headers.Add("test-header", "test-header");
+                if (transportType != TransportType.Websockets)
+                {
+                    hubConnection.Headers.Add(System.Net.HttpRequestHeader.Referer.ToString(), "referer");
+                }
+
+                hubConnection.Start(host.Transport).Wait();
+                proxy.Invoke("Send", "Hello");
+
+                Assert.True(wh.Wait(TimeSpan.FromSeconds(10)));
+                hubConnection.Stop();
+            }
+        }
+
+        [Theory]
+        [InlineData(HostType.Memory, TransportType.ServerSentEvents)]
+        [InlineData(HostType.Memory, TransportType.LongPolling)]
+        [InlineData(HostType.IISExpress, TransportType.LongPolling)]
+        [InlineData(HostType.IISExpress, TransportType.ServerSentEvents)]
+        [InlineData(HostType.IISExpress, TransportType.Websockets)]
+        public void RequestHeadersCannotBeSetOnceConnected(HostType hostType, TransportType transportType)
+        {
+            using (var host = CreateHost(hostType, transportType))
+            {
+                // Arrange
+                host.Initialize();
+                HubConnection hubConnection = CreateHubConnection(host);
+                IHubProxy proxy = hubConnection.CreateHubProxy("ExamineHeadersHub");
+
+                hubConnection.Start(host.Transport).Wait();
+
+                var ex = Assert.Throws<InvalidOperationException>(() => hubConnection.Headers.Add("test-header", "test-header"));
+                Assert.Equal("Request headers can only be set when the connection is disconnected", ex.Message);
+
+                // Clean-up
+                hubConnection.Stop();
             }
         }
 
